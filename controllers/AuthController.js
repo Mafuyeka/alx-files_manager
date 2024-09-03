@@ -1,39 +1,64 @@
+import sha1 from 'sha1';
 import { v4 as uuidv4 } from 'uuid';
+import dbClient from '../utils/db';
 import redisClient from '../utils/redis';
 
-/**
- * Controller for the index route.
- * @class AuthController
- * @method getConnect
- * @method getDisconnect
- */
 class AuthController {
-  /**
-    * Method for the route GET /connect.
-    * Create's a new token in Redis.
-    * @param {object} req - The express request object.
-    * @param {object} res - The express response object.
-    * @returns {object} 200 status code
-    */
+  // Handles user login and token generation
   static async getConnect(req, res) {
-    const token = uuidv4();
-    await redisClient.set(`auth_${token}`, req.user._id.toString(), 24 * 60 * 60);
+    const authData = req.header('Authorization');
+    if (!authData || !authData.startsWith('Basic ')) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
 
-    return res.status(200).json({ token });
+    let userEmail = authData.split(' ')[1];
+    const buff = Buffer.from(userEmail, 'base64');
+    userEmail = buff.toString('ascii');
+    const data = userEmail.split(':'); // [email, password]
+
+    if (data.length !== 2) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const [email, plainPassword] = data;
+    const hashedPassword = sha1(plainPassword);
+    const users = dbClient.db.collection('users');
+
+    try {
+      const user = await users.findOne({ email, password: hashedPassword });
+      if (user) {
+        const token = uuidv4();
+        const key = `auth_${token}`;
+        await redisClient.set(key, user._id.toString(), 60 * 60 * 24); // 24-hour token expiration
+        res.status(200).json({ token });
+      } else {
+        res.status(401).json({ error: 'Unauthorized' });
+      }
+    } catch (err) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
   }
 
-  /**
-    * Method for the route GET /disconnect.
-    * Deletes the token in Redis.
-    * @param {object} req - The express request object.
-    * @param {object} res - The express response object.
-    * @returns {object} 204 status code
-    */
+  // Handles user logout and token invalidation
   static async getDisconnect(req, res) {
-    const token = req.headers['x-token'];
+    const token = req.header('X-Token');
+    if (!token) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
 
-    await redisClient.del(`auth_${token}`);
-    return res.status(204).send();
+    const key = `auth_${token}`;
+    const userId = await redisClient.get(key);
+
+    if (userId) {
+      await redisClient.del(key);
+      res.status(204).json({});
+    } else {
+      res.status(401).json({ error: 'Unauthorized' });
+    }
   }
 }
+
 export default AuthController;
