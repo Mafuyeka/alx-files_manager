@@ -1,16 +1,21 @@
 import { MongoClient } from 'mongodb';
 
+const USERNAME = 'gmarkd';
+const PASSWORD = 'UEO2AqP2DLHJEqab';
+const HOST = process.env.DB_HOST || 'localhost';
+const PORT = process.env.DB_PORT || 27017;
+const DATABASE = process.env.DB_DATABASE || 'manager';
+
+// MongoDB connection URL with username and password
+const url = `mongodb://${USERNAME}:${PASSWORD}@${HOST}:${PORT}/?authSource=${DATABASE}`;
+
 class DBClient {
   constructor() {
-    const host = process.env.DB_HOST || 'localhost';
-    const port = process.env.DB_PORT || 27017;
-    const database = process.env.DB_DATABASE || 'files_manager';
-    const url = `mongodb+srv://gmarkd:UEO2AqP2DLHJEqab@manager.xrimd.mongodb.net/?retryWrites=true&w=majority&appName=manager`;
-
-    this.client = new MongoClient(url, { useUnifiedTopology: true });
-    this.client.connect((err) => {
-      if (err) console.error(err);
-      else console.log('Connected to MongoDB');
+    this.client = new MongoClient(url, { useUnifiedTopology: true, useNewUrlParser: true });
+    this.client.connect().then(() => {
+      this.db = this.client.db(`${DATABASE}`);
+    }).catch((err) => {
+      console.log('Error connecting to MongoDB:', err);
     });
   }
 
@@ -19,18 +24,17 @@ class DBClient {
   }
 
   async nbUsers() {
-    return this.client.db().collection('users').countDocuments();
+    const users = this.db.collection('users');
+    const usersNum = await users.countDocuments();
+    return usersNum;
   }
 
   async nbFiles() {
-    return this.client.db().collection('files').countDocuments();
-  }
-
-  async getUser(query) {
-    return this.client.db().collection('users').findOne(query);
+    const files = this.db.collection('files');
+    const filesNum = await files.countDocuments();
+    return filesNum;
   }
 }
 
 const dbClient = new DBClient();
-export default dbClient;
-
+module.exports = dbClient;
