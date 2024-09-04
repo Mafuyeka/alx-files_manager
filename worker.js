@@ -1,28 +1,42 @@
-import Queue from 'bull';
-import { ObjectId } from 'mongodb';
-import imageThumbnail from 'image-thumbnail';
-import fs from 'fs';
-import dbClient from './utils/db';
+import { Queue, Worker, QueueScheduler } from 'bullmq';
+import { createClient } from 'redis';
+import dbClient from './utils/mongo';
+import redisClient from './utils/redis';
 
-const fileQueue = new Queue('fileQueue');
+const connection = createClient();
 
-fileQueue.process(async (job) => {
-  const { userId, fileId } = job.data;
+const fileQueue = new Queue('fileQueue', { connection });
+const fileQueueScheduler = new QueueScheduler('fileQueue', { connection });
 
-  if (!fileId) throw new Error('Missing fileId');
-  if (!userId) throw new Error('Missing userId');
+const worker = new Worker('fileQueue', async job => {
+  const { fileId, userId } = job.data;
 
-  const file = await dbClient.db.collection('files').findOne({ _id: ObjectId(fileId), userId: ObjectId(userId) });
-  if (!file) throw new Error('File not found');
-
-  const originalPath = file.localPath;
-  const sizes = [500, 250, 100];
-
-  for (const size of sizes) {
-    const thumbnail = await imageThumbnail(originalPath, { width: size });
-    const thumbnailPath = `${originalPath}_${size}`;
-    await fs.promises.writeFile(thumbnailPath, thumbnail);
+  const file = await dbClient.db.collection('files').findOne({ _id: fileId, userId });
+  if (!file) {
+    throw new Error('File not found');
   }
+
+  // Perform the background task (e.g., generate a thumbnail)
+  if (file.type === 'image') {
+    const thumbnail = await generateThumbnail(file.localPath);
+    await dbClient.db.collection('files').updateOne({ _id: fileId }, { $set: { thumbnail } });
+  }
+}, { connection });
+
+worker.on('completed', (job) => {
+  console.log(`Job ${job.id} completed successfully`);
 });
 
-console.log('Worker is running');
+worker.on('failed', (job, err) => {
+  console.error(`Job ${job.id} failed with error ${err.message}`);
+});
+
+async function generateThumbnail(filePath) {
+  // Implement your thumbnail generation logic here
+  // For example, using the image-thumbnail library
+  const imageThumbnail = require('image-thumbnail');
+  const thumbnail = await imageThumbnail(filePath);
+  return thumbnail;
+}
+
+export { fileQueue, fileQueueScheduler, worker };
