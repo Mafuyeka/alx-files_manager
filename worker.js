@@ -1,42 +1,38 @@
-import { Queue, Worker, QueueScheduler } from 'bullmq';
-import { createClient } from 'redis';
-import dbClient from './utils/mongo';
-import redisClient from './utils/redis';
+import { Queue, Worker } from 'bull';
+import dbClient from './utils/db.js';
+import fs from 'fs';
+import path from 'path';
+import thumbnail from 'image-thumbnail';
+import { fileQueue } from './utils/fileQueue.js';
 
-const connection = createClient();
+const worker = new Worker('fileQueue', async (job) => {
+  const { userId, fileId, fileName } = job.data;
 
-const fileQueue = new Queue('fileQueue', { connection });
-const fileQueueScheduler = new QueueScheduler('fileQueue', { connection });
+  if (!fileId) throw new Error('Missing fileId');
+  if (!userId) throw new Error('Missing userId');
 
-const worker = new Worker('fileQueue', async job => {
-  const { fileId, userId } = job.data;
+  const fileDocument = await dbClient.db.collection('files').findOne({ _id: fileId, userId });
+  if (!fileDocument) throw new Error('File not found');
 
-  const file = await dbClient.db.collection('files').findOne({ _id: fileId, userId });
-  if (!file) {
-    throw new Error('File not found');
+  const localPath = process.env.FOLDER_PATH || '/tmp/files_manager';
+  const originalFilePath = path.join(localPath, fileName);
+
+  // Generate thumbnails
+  const sizes = [500, 250, 100];
+  for (const size of sizes) {
+    const thumbnailOptions = { width: size };
+    const thumbnailPath = path.join(localPath, `${fileName}_${size}`);
+    const thumbnailImage = await thumbnail(originalFilePath, thumbnailOptions);
+    fs.writeFileSync(thumbnailPath, thumbnailImage);
   }
-
-  // Perform the background task (e.g., generate a thumbnail)
-  if (file.type === 'image') {
-    const thumbnail = await generateThumbnail(file.localPath);
-    await dbClient.db.collection('files').updateOne({ _id: fileId }, { $set: { thumbnail } });
-  }
-}, { connection });
+});
 
 worker.on('completed', (job) => {
-  console.log(`Job ${job.id} completed successfully`);
+  console.log(`Job ${job.id} completed!`);
 });
 
 worker.on('failed', (job, err) => {
-  console.error(`Job ${job.id} failed with error ${err.message}`);
+  console.log(`Job ${job.id} failed with error: ${err.message}`);
 });
 
-async function generateThumbnail(filePath) {
-  // Implement your thumbnail generation logic here
-  // For example, using the image-thumbnail library
-  const imageThumbnail = require('image-thumbnail');
-  const thumbnail = await imageThumbnail(filePath);
-  return thumbnail;
-}
-
-export { fileQueue, fileQueueScheduler, worker };
+console.log('Worker started...');

@@ -1,33 +1,39 @@
-import { v4 as uuidv4 } from 'uuid';
-import dbClient from '../utils/mongo';
-import redisClient from '../utils/redis';
+import redisClient from '../utils/redis.js';
+import dbClient from '../utils/db.js';
 import fs from 'fs';
-import mime from 'mime-types';
-import imageThumbnail from 'image-thumbnail';
+import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
 
 class FilesController {
   static async postUpload(req, res) {
-    const { name, type, parentId, isPublic, data } = req.body;
+    const token = req.headers['x-token'];
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
 
-    if (!name) {
-      return res.status(400).json({ error: 'Missing name' });
-    }
-    if (!type) {
-      return res.status(400).json({ error: 'Missing type' });
-    }
-    if (!data) {
-      return res.status(400).json({ error: 'Missing data' });
+    const userId = await redisClient.get(`auth_${token}`);
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { name, type, data, parentId, isPublic } = req.body;
+
+    if (!name) return res.status(400).json({ error: 'Missing name' });
+    if (!type || !['file', 'folder', 'image'].includes(type)) return res.status(400).json({ error: 'Missing type' });
+    if ((type === 'file' || type === 'image') && !data) return res.status(400).json({ error: 'Missing data' });
+
+    let parentFile;
+    if (parentId) {
+      parentFile = await dbClient.db.collection('files').findOne({ _id: parentId });
+      if (!parentFile) return res.status(400).json({ error: 'Parent not found' });
+      if (parentFile.type !== 'folder') return res.status(400).json({ error: 'Parent is not a folder' });
     }
 
-    const userId = await redisClient.get(`auth_${req.headers['x-token']}`);
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
+    const localPath = process.env.FOLDER_PATH || '/tmp/files_manager';
+    if (!fs.existsSync(localPath)) fs.mkdirSync(localPath, { recursive: true });
+
+    let fileData = null;
+    if (type === 'file' || type === 'image') {
+      const fileName = uuidv4();
+      fileData = Buffer.from(data, 'base64');
+      fs.writeFileSync(path.join(localPath, fileName), fileData);
     }
-
-    const fileData = Buffer.from(data, 'base64');
-    const filePath = `/tmp/${uuidv4()}`;
-
-    fs.writeFileSync(filePath, fileData);
 
     const newFile = {
       userId,
@@ -35,115 +41,11 @@ class FilesController {
       type,
       isPublic: isPublic || false,
       parentId: parentId || 0,
-      localPath: filePath,
+      localPath: fileData ? path.join(localPath, uuidv4()) : null,
     };
 
-    await dbClient.db.collection('files').insertOne(newFile);
-    return res.status(201).json(newFile);
-  }
-
-  static async getShow(req, res) {
-    const { id } = req.params;
-    const userId = await redisClient.get(`auth_${req.headers['x-token']}`);
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const file = await dbClient.db.collection('files').findOne({ _id: id, userId });
-    if (!file) {
-      return res.status(404).json({ error: 'Not found' });
-    }
-
-    if (file.type === 'folder') {
-      return res.status(400).json({ error: 'A folder doesn\'t have content' });
-    }
-
-    if (!file.isPublic && file.userId !== userId) {
-      return res.status(404).json({ error: 'Not found' });
-    }
-
-    const filePath = file.localPath;
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Not found' });
-    }
-
-    const mimeType = mime.lookup(filePath);
-    res.setHeader('Content-Type', mimeType);
-    fs.createReadStream(filePath).pipe(res);
-  }
-
-  static async getIndex(req, res) {
-    const { parentId, page = 0 } = req.query;
-    const userId = await redisClient.get(`auth_${req.headers['x-token']}`);
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const query = { userId, parentId: parentId || 0 };
-    const files = await dbClient.db.collection('files').find(query).skip(page * 20).limit(20).toArray();
-    return res.status(200).json(files);
-  }
-
-  static async putPublish(req, res) {
-    const { id } = req.params;
-    const userId = await redisClient.get(`auth_${req.headers['x-token']}`);
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const file = await dbClient.db.collection('files').findOne({ _id: id, userId });
-    if (!file) {
-      return res.status(404).json({ error: 'Not found' });
-    }
-
-    await dbClient.db.collection('files').updateOne({ _id: id }, { $set: { isPublic: true } });
-    return res.status(200).json({ id, isPublic: true });
-  }
-
-  static async putUnpublish(req, res) {
-    const { id } = req.params;
-    const userId = await redisClient.get(`auth_${req.headers['x-token']}`);
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const file = await dbClient.db.collection('files').findOne({ _id: id, userId });
-    if (!file) {
-      return res.status(404).json({ error: 'Not found' });
-    }
-
-    await dbClient.db.collection('files').updateOne({ _id: id }, { $set: { isPublic: false } });
-    return res.status(200).json({ id, isPublic: false });
-  }
-
-  static async getThumbnail(req, res) {
-    const { id } = req.params;
-    const userId = await redisClient.get(`auth_${req.headers['x-token']}`);
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const file = await dbClient.db.collection('files').findOne({ _id: id, userId });
-    if (!file) {
-      return res.status(404).json({ error: 'Not found' });
-    }
-
-    if (file.type !== 'image') {
-      return res.status(400).json({ error: 'A thumbnail can only be generated for image files' });
-    }
-
-    const filePath = file.localPath;
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Not found' });
-    }
-
-    try {
-      const thumbnail = await imageThumbnail(filePath);
-      res.setHeader('Content-Type', 'image/png');
-      res.send(thumbnail);
-    } catch (error) {
-      res.status(500).json({ error: 'Error generating thumbnail' });
-    }
+    const result = await dbClient.db.collection('files').insertOne(newFile);
+    res.status(201).json({ id: result.insertedId, ...newFile });
   }
 }
 
