@@ -1,0 +1,74 @@
+import { ObjectId } from 'mongodb';
+import mime from 'mime-types';
+import fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
+import dbClient from '../utils/db';
+import redisClient from '../utils/redis';
+
+class FilesController {
+  static async postUpload(request, response) {
+    const { name, type, parentId = 0, isPublic = false } = request.body;
+    const { userId } = await this.getUserIdFromToken(request);
+
+    if (!name) {
+      return response.status(400).json({ error: 'Missing name' });
+    }
+
+    if (!type || !['folder', 'file', 'image'].includes(type)) {
+      return response.status(400).json({ error: 'Missing type' });
+    }
+
+    if (type !== 'folder' && !request.body.data) {
+      return response.status(400).json({ error: 'Missing data' });
+    }
+
+    if (parentId !== 0) {
+      const parentFile = await dbClient.client.db().collection('files').findOne({
+        _id: ObjectId(parentId),
+        type: 'folder',
+        userId: ObjectId(userId),
+      });
+      if (!parentFile) {
+        return response.status(400).json({ error: 'Parent not found' });
+      }
+    }
+
+    const newFile = {
+      userId: ObjectId(userId),
+      name,
+      type,
+      isPublic,
+      parentId: parentId === 0 ? 0 : ObjectId(parentId),
+    };
+
+    if (type === 'folder') {
+      const result = await dbClient.client.db().collection('files').insertOne(newFile);
+      return response.status(201).json({ id: result.insertedId, ...newFile });
+    }
+
+    const localPath = `/tmp/files_manager/${uuidv4()}`;
+    fs.writeFileSync(localPath, Buffer.from(request.body.data, 'base64'));
+    newFile.localPath = localPath;
+
+    const result = await dbClient.client.db().collection('files').insertOne(newFile);
+    return response.status(201).json({ id: result.insertedId, ...newFile });
+  }
+
+  static async getUserIdFromToken(request) {
+    const token = request.header('X-Token');
+    if (!token) {
+      throw new Error('Unauthorized');
+    }
+
+    const userId = await redisClient.get(`auth_${token}`);
+    if (!userId) {
+      throw new Error('Unauthorized');
+    }
+
+    return { userId };
+  }
+
+  // Implement other FilesController methods here...
+}
+
+export default FilesController;
