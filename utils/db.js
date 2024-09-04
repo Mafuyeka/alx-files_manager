@@ -1,19 +1,23 @@
-import { MongoClient } from 'mongodb';
+const { MongoClient } = require('mongodb');
 
 class DBClient {
-  constructor() {
-    const username = encodeURIComponent("gmarkd");
-    const password = encodeURIComponent("UEO2AqP2DLHJEqab")
-    const host = process.env.DB_HOST || 'localhost';
-    const port = process.env.DB_PORT || 27017;
-    const database = process.env.DB_DATABASE || 'files_manager';
-    this.client = new MongoClient(`mongodb+srv://${username}:${password}@${cluster}/?authSource=${authSource}&authMechanism=${authMechanism}`, { useNewUrlParser: true, useUnifiedTopology: true });
-    this.client.connect().catch(err => console.error('MongoDB Client Error', err));
-    this.db = this.client.db(database);
+  constructor(host = 'localhost', port = 27017, database = 'manager') {
+    const username = 'gmarkd';
+    const password = 'UEO2AqP2DLHJEqab';
+    const url = `mongodb://${username}:${password}@${host}:${port}/${database}`;
+
+    MongoClient.connect(
+      url,
+      { useUnifiedTopology: true },
+      (err, client) => {
+        if (err) throw err;
+        this.db = client.db(database);
+      }
+    );
   }
 
   isAlive() {
-    return this.client.isConnected();
+    return !!this.db;
   }
 
   async nbUsers() {
@@ -25,5 +29,10 @@ class DBClient {
   }
 }
 
-const dbClient = new DBClient();
-export default dbClient;
+const dbClient = new DBClient(
+  process.env.DB_HOST,
+  process.env.DB_PORT,
+  process.env.DB_DATABASE
+);
+
+module.exports = dbClient;
