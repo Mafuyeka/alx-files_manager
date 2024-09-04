@@ -1,19 +1,57 @@
-import dbClient from '../utils/db.js';
 import sha1 from 'sha1';
+import { ObjectID } from 'mongodb';
+import Queue from 'bull';
+import dbClient from '../utils/db';
+import redisClient from '../utils/redis';
+
+const userQueue = new Queue('userQueue', 'redis://127.0.0.1:6379');
 
 class UsersController {
-  static async postNew(req, res) {
-    const { email, password } = req.body;
-    if (!email) return res.status(400).json({ error: 'Missing email' });
-    if (!password) return res.status(400).json({ error: 'Missing password' });
+  static postNew(request, response) {
+    const { email, password } = request.body;
 
-    const existingUser = await dbClient.db.collection('users').findOne({ email });
-    if (existingUser) return res.status(400).json({ error: 'Already exist' });
+    if (!email) {
+      return response.status(400).json({ error: 'Missing email' });
+    }
+    if (!password) {
+      return response.status(400).json({ error: 'Missing password' });
+    }
 
-    const hashedPassword = sha1(password);
-    const newUser = { email, password: hashedPassword };
-    const result = await dbClient.db.collection('users').insertOne(newUser);
-    res.status(201).json({ id: result.insertedId, email });
+    const users = dbClient.db.collection('users');
+    users.findOne({ email }, (err, user) => {
+      if (user) {
+        return response.status(400).json({ error: 'Already exist' });
+      }
+      const hashedPassword = sha1(password);
+      users.insertOne(
+        {
+          email,
+          password: hashedPassword,
+        },
+      ).then((result) => {
+        response.status(201).json({ id: result.insertedId, email });
+        userQueue.add({ userId: result.insertedId });
+      }).catch((error) => console.log(error));
+    });
+  }
+
+  static async getMe(request, response) {
+    const token = request.header('X-Token');
+    const key = `auth_${token}`;
+    const userId = await redisClient.get(key);
+    if (userId) {
+      const users = dbClient.db.collection('users');
+      const idObject = new ObjectID(userId);
+      users.findOne({ _id: idObject }, (err, user) => {
+        if (user) {
+          return response.status(200).json({ id: userId, email: user.email });
+        }
+        return response.status(401).json({ error: 'Unauthorized' });
+      });
+    } else {
+      console.log('Unauthorized');
+      return response.status(401).json({ error: 'Unauthorized' });
+    }
   }
 }
 

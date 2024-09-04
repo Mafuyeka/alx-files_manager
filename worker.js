@@ -1,38 +1,40 @@
-import { Queue, Worker } from 'bull';
-import dbClient from './utils/db.js';
+import Queue from 'bull';
+import imageThumbnail from 'image-thumbnail';
 import fs from 'fs';
-import path from 'path';
-import thumbnail from 'image-thumbnail';
-import { fileQueue } from './utils/fileQueue.js';
+import { ObjectID } from 'mongodb';
+import dbClient from './utils/db';
 
-const worker = new Worker('fileQueue', async (job) => {
-  const { userId, fileId, fileName } = job.data;
+const fileQueue = new Queue('fileQueue', 'redis://127.0.0.1:6379');
 
-  if (!fileId) throw new Error('Missing fileId');
-  if (!userId) throw new Error('Missing userId');
+async function generateThumbnail(path, width) {
+  const thumbnail = await imageThumbnail(path, { width });
+  const thumbnailPath = `${path}_${width}`;
+  await fs.promises.writeFile(thumbnailPath, thumbnail);
+}
 
-  const fileDocument = await dbClient.db.collection('files').findOne({ _id: fileId, userId });
-  if (!fileDocument) throw new Error('File not found');
+fileQueue.process(async (job) => {
+  const { fileId, userId } = job.data;
 
-  const localPath = process.env.FOLDER_PATH || '/tmp/files_manager';
-  const originalFilePath = path.join(localPath, fileName);
-
-  // Generate thumbnails
-  const sizes = [500, 250, 100];
-  for (const size of sizes) {
-    const thumbnailOptions = { width: size };
-    const thumbnailPath = path.join(localPath, `${fileName}_${size}`);
-    const thumbnailImage = await thumbnail(originalFilePath, thumbnailOptions);
-    fs.writeFileSync(thumbnailPath, thumbnailImage);
+  if (!fileId) {
+    throw new Error('Missing fileId');
   }
-});
 
-worker.on('completed', (job) => {
-  console.log(`Job ${job.id} completed!`);
-});
+  if (!userId) {
+    throw new Error('Missing userId');
+  }
 
-worker.on('failed', (job, err) => {
-  console.log(`Job ${job.id} failed with error: ${err.message}`);
-});
+  const files = dbClient.db.collection('files');
+  const file = await files.findOne({
+    _id: ObjectID(fileId),
+    userId: ObjectID(userId),
+  });
 
-console.log('Worker started...');
+  if (!file) {
+    throw new Error('File not found');
+  }
+
+  const sizes = [500, 250, 100];
+  const thumbnailPromises = sizes.map((size) => generateThumbnail(file.localPath, size));
+
+  await Promise.all(thumbnailPromises);
+});
