@@ -5,7 +5,7 @@ import redisClient from '../utils/redis';
 
 class AuthController {
   static async getConnect(request, response) {
-    const authData = request.headers('Authorization');
+    const authData = request.header('Authorization');
     let userEmail = authData.split(' ')[1];
     const buff = Buffer.from(userEmail, 'base64');
     userEmail = buff.toString('ascii');
@@ -29,7 +29,7 @@ class AuthController {
   }
 
   static async getDisconnect(request, response) {
-    const token = request.header('x-token');
+    const token = request.header('X-Token');
     const key = `auth_${token}`;
     const id = await redisClient.get(key);
     if (id) {
